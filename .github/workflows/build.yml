@@ -2,57 +2,33 @@ name: build android so
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: "バージョン情報（未入力時は 0.0.0）"
-        required: false
-        default: "0.0.0"
+  pull_request:
+    paths:
+      - .cargo/config.toml
+      - .github/**
+      - build_util/**
+      - Cargo.*
+      - crates/voicevox_core*/**
+      - model/**
+      - rust-toolchain
+  push:
+    branches:
+      - main
 
 defaults:
   run:
     shell: bash
 
 jobs:
-  config:
-    runs-on: ubuntu-latest
-    outputs:
-      includes: ${{ steps.strategy_matrix.outputs.includes }}
-      version: ${{ steps.strategy_matrix.outputs.version }}
-    steps:
-      - name: declare strategy matrix
-        id: strategy_matrix
-        run: |
-          version=${{ inputs.version || '0.0.0' }}
-
-          # Android用のみに限定
-          includes='[
-            {
-              "os": "ubuntu-22.04",
-              "target": "aarch64-linux-android",
-              "artifact_name": "android-arm64",
-              "c_release_format": "plain-cdylib"
-            },
-            {
-              "os": "ubuntu-22.04",
-              "target": "x86_64-linux-android",
-              "artifact_name": "android-x86_64",
-              "c_release_format": "plain-cdylib"
-            }
-          ]'
-
-          cat >> "$GITHUB_OUTPUT" <<EOF
-          includes=$includes
-          version=$version
-          EOF
-
   build:
-    needs: config
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
-        include: ${{ fromJson(needs.config.outputs.includes) }}
-    runs-on: ${{ matrix.os }}
-    env:
-      ASSET_NAME: voicevox_core-${{ matrix.artifact_name }}-${{ needs.config.outputs.version }}
+        include:
+          - target: aarch64-linux-android
+            artifact_name: android-arm64
+          - target: x86_64-linux-android
+            artifact_name: android-x86_64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -66,19 +42,6 @@ jobs:
           echo "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
           echo "AR_${{ matrix.target }}=llvm-ar" >> "$GITHUB_ENV"
 
-      - name: Install cargo-binstall
-        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
-        with:
-          tool: cargo-binstall
-
-      - name: Install cargo-edit
-        run: cargo binstall cargo-edit@^0.11 --no-confirm --log-level debug
-
-      - name: set cargo version
-        run: |
-          version=${{ needs.config.outputs.version }}
-          cargo set-version $version --exclude voicevox_core_python_api --exclude xtask
-
       - name: cache target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
@@ -89,23 +52,11 @@ jobs:
 
       - name: Organize artifact
         run: |
-          mkdir -p artifact/${{ env.ASSET_NAME }}/{include,lib}
-          feature=VOICEVOX_LOAD_ONNXRUNTIME
-          sed 's:^//\(#define '"$feature"'\)$:\1:' crates/voicevox_core_c_api/include/voicevox_core.h \
-            > "artifact/${{ env.ASSET_NAME }}/include/voicevox_core.h"
-          cp -v target/${{ matrix.target }}/c-api/*voicevox_core.so "artifact/${{ env.ASSET_NAME }}/lib"
-          cp -v README.md "artifact/${{ env.ASSET_NAME }}/README.txt"
-          cp -v LICENSE "artifact/${{ env.ASSET_NAME }}/"
-          echo ${{ needs.config.outputs.version }} > "artifact/${{ env.ASSET_NAME }}/VERSION"
+          mkdir -p artifact
+          cp -v target/${{ matrix.target }}/c-api/*voicevox_core.so artifact/
 
-      - name: Archive artifact
-        run: |
-          cd artifact
-          7z a "../${{ env.ASSET_NAME }}.zip" "${{ env.ASSET_NAME }}"
-
-      # GitHub Actionsの画面（Artifacts）から直接ダウンロードできるように保存
-      - name: Upload artifact to GitHub Actions
+      - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ env.ASSET_NAME }}
-          path: ${{ env.ASSET_NAME }}.zip
+          name: voicevox_core-${{ matrix.artifact_name }}
+          path: artifact/*voicevox_core.so
